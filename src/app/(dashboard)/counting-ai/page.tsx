@@ -248,7 +248,6 @@ export default function CountingAIPage() {
         lastDetectionAtRef.current = now;
 
         try {
-          // ⭐⭐⭐ APPEL ASYNCHRONE
           const persons = await personDetector.detectPersons(video);
           const tracks = tracksRef.current;
           const matchedIds = new Set<string>();
@@ -346,7 +345,9 @@ export default function CountingAIPage() {
 
     const tracks = tracksRef.current;
     for (const [id, track] of tracks) {
-      const [x, y, w, h] = track.bbox;
+      // ⭐ VÉRIFICATION DE SECURITE pour éviter les erreurs
+      const bbox = track.bbox || [0, 0, 0, 0];
+      const [x, y, w, h] = bbox;
       
       let color = '#facc15';
       if (track.gender === 'men') color = '#3b82f6';
@@ -368,7 +369,6 @@ export default function CountingAIPage() {
     }
 
     // Compteur
-    const counterSize = isMobile ? 140 : 160;
     const counterFontSize = isMobile ? 28 : 24;
     
     ctx.fillStyle = 'rgba(0,0,0,0.85)';
@@ -412,6 +412,7 @@ export default function CountingAIPage() {
     ctx.fillText(`👥 ${tracks.size} personnes`, 18, canvas.height - 13);
   };
 
+  // ⭐ Vérification de roundRect
   if (!CanvasRenderingContext2D.prototype.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
       if (r > w/2) r = w/2;
