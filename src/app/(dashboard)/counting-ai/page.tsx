@@ -345,6 +345,7 @@ export default function CountingAIPage() {
 
     const tracks = tracksRef.current;
     for (const [id, track] of tracks) {
+      // ⭐ SÉCURISATION DES DONNÉES
       const bbox = track.bbox || [0, 0, 0, 0];
       const [x, y, w, h] = bbox;
       
