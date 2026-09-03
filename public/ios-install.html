@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Installer MEGA COUNT</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: white;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 400px;
+      text-align: center;
+    }
+    .icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 12px;
+    }
+    p {
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .steps {
+      text-align: left;
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+    }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .step:last-child {
+      border-bottom: none;
+    }
+    .step-num {
+      background: #4f46e5;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .btn {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      padding: 14px 32px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn:hover {
+      background: #4338ca;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">📱</div>
+    <h1>Installer MEGA COUNT</h1>
+    <p>Ajoutez l'application sur votre écran d'accueil pour un accès rapide</p>
+    
+    <div class="steps">
+      <div class="step">
+        <span class="step-num">1</span>
+        <span>Ouvrez Safari sur votre iPhone</span>
+      </div>
+      <div class="step">
+        <span class="step-num">2</span>
+        <span>Appuyez sur le bouton <strong>Partager</strong> (⬆️)</span>
+      </div>
+      <div class="step">
+        <span class="step-num">3</span>
+        <span>Faites défiler et choisissez <strong>Ajouter à l'écran d'accueil</strong></span>
+      </div>
+      <div class="step">
+        <span class="step-num">4</span>
+        <span>Appuyez sur <strong>Ajouter</strong></span>
+      </div>
+    </div>
+    
+    <button class="btn" onclick="window.location.href='/'">Ouvrir l'application</button>
+  </div>
+</body>
+</html>
