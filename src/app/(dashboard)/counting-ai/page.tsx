@@ -48,7 +48,7 @@ export default function CountingAIPage() {
   const womenCountRef = useRef(0);
   const childrenCountRef = useRef(0);
   const streamRef = useRef<MediaStream | null>(null);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number | undefined>(undefined); // ✅ FIX: useRef<number>() exigeait un argument
   const tracksRef = useRef<Map<string, Track>>(new Map());
   const frameCountRef = useRef(0);
   const lastFpsUpdateRef = useRef(Date.now());
@@ -61,11 +61,11 @@ export default function CountingAIPage() {
       router.push('/login');
       return;
     }
-    
+
     if (typeof window !== 'undefined') {
       setIsMobile(window.innerWidth < 768);
     }
-    
+
     initializeAI();
     loadData();
 
@@ -159,7 +159,7 @@ export default function CountingAIPage() {
   const startCamera = async () => {
     try {
       const isMobile = window.innerWidth < 768;
-      
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'environment',
@@ -198,19 +198,19 @@ export default function CountingAIPage() {
   const calculateIoU = (box1: number[], box2: number[]): number => {
     const [x1, y1, w1, h1] = box1;
     const [x2, y2, w2, h2] = box2;
-    
+
     const xLeft = Math.max(x1, x2);
     const yTop = Math.max(y1, y2);
     const xRight = Math.min(x1 + w1, x2 + w2);
     const yBottom = Math.min(y1 + h1, y2 + h2);
-    
+
     if (xRight < xLeft || yBottom < yTop) return 0;
-    
+
     const intersection = (xRight - xLeft) * (yBottom - yTop);
     const area1 = w1 * h1;
     const area2 = w2 * h2;
     const union = area1 + area2 - intersection;
-    
+
     return intersection / union;
   };
 
@@ -256,7 +256,7 @@ export default function CountingAIPage() {
 
           for (const person of persons) {
             const matchId = findBestMatch(person.bbox, tracks);
-            
+
             if (matchId) {
               matchedIds.add(matchId);
               const track = tracks.get(matchId)!;
@@ -266,7 +266,7 @@ export default function CountingAIPage() {
 
               if (!track.counted && track.hits >= 2) {
                 track.counted = true;
-                
+
                 if (person.gender === 'men') {
                   menCountRef.current++;
                   setMenCount(menCountRef.current);
@@ -277,10 +277,10 @@ export default function CountingAIPage() {
                   childrenCountRef.current++;
                   setChildrenCount(childrenCountRef.current);
                 }
-                
+
                 countRef.current++;
                 setCount(countRef.current);
-                
+
                 console.log(`✅ Personne comptée! Total: ${countRef.current} (👨 ${menCountRef.current}, 👩 ${womenCountRef.current}, 👶 ${childrenCountRef.current})`);
               }
             }
@@ -345,31 +345,31 @@ export default function CountingAIPage() {
 
     const tracks = tracksRef.current;
     for (const [id, track] of tracks) {
-      // ⭐ SÉCURISATION DES DONNÉES
       const bbox = track.bbox || [0, 0, 0, 0];
       const [x, y, w, h] = bbox;
-      
+
       let color = '#facc15';
       if (track.gender === 'men') color = '#3b82f6';
       else if (track.gender === 'women') color = '#ec4899';
       else if (track.gender === 'children') color = '#22c55e';
-      
+
       const label = track.counted ? '✅' : '⏳';
-      
+
       ctx.strokeStyle = color;
       ctx.lineWidth = isMobile ? 3 : 2;
       ctx.strokeRect(x, y, w, h);
 
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(x, y - 24, 28, 20);
-      
+
       ctx.fillStyle = color;
       ctx.font = isMobile ? '14px Arial' : '12px Arial';
       ctx.fillText(label, x + 4, y - 7);
     }
 
+    // Compteur — roundRect natif (supporté nativement par tous les navigateurs modernes, plus besoin de polyfill)
     const counterFontSize = isMobile ? 28 : 24;
-    
+
     ctx.fillStyle = 'rgba(0,0,0,0.85)';
     ctx.beginPath();
     ctx.roundRect(canvas.width - 200, 16, 185, 110, 16);
@@ -379,11 +379,11 @@ export default function CountingAIPage() {
     ctx.font = '10px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('COMPTAGE', canvas.width - 107, 34);
-    
+
     ctx.fillStyle = '#4ade80';
     ctx.font = `bold ${counterFontSize}px Arial`;
     ctx.fillText(`${countRef.current}`, canvas.width - 107, 62);
-    
+
     ctx.font = '11px Arial';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#3b82f6';
@@ -411,24 +411,11 @@ export default function CountingAIPage() {
     ctx.fillText(`👥 ${tracks.size} personnes`, 18, canvas.height - 13);
   };
 
-  if (!CanvasRenderingContext2D.prototype.roundRect) {
-    CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
-      if (r > w/2) r = w/2;
-      if (r > h/2) r = h/2;
-      this.beginPath();
-      this.moveTo(x + r, y);
-      this.lineTo(x + w - r, y);
-      this.quadraticCurveTo(x + w, y, x + w, y + r);
-      this.lineTo(x + w, y + h - r);
-      this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-      this.lineTo(x + r, y + h);
-      this.quadraticCurveTo(x, y + h, x, y + h - r);
-      this.lineTo(x, y + r);
-      this.quadraticCurveTo(x, y, x + r, y);
-      this.closePath();
-      return this;
-    };
-  }
+  // ✅ FIX: le polyfill CanvasRenderingContext2D.prototype.roundRect a été supprimé.
+  // Il entrait en conflit avec la signature TypeScript native de roundRect() (10 erreurs de build),
+  // était exécuté à chaque render (mutation d'un prototype global dans le corps du composant),
+  // et référençait un objet navigateur (CanvasRenderingContext2D) potentiellement absent côté serveur.
+  // roundRect() est nativement supporté par tous les navigateurs modernes (Chrome, Firefox, Safari 16+) — inutile de le polyfiller ici.
 
   const startCounting = async () => {
     if (!selectedAssembly || !selectedService || !selectedEntrance) {
@@ -589,8 +576,8 @@ export default function CountingAIPage() {
 
   if (isCounting) {
     return (
-      <div style={{ 
-        minHeight: '100vh', 
+      <div style={{
+        minHeight: '100vh',
         background: '#0f172a',
         padding: isMobile ? 0 : '16px',
         overflow: 'hidden',
@@ -600,8 +587,8 @@ export default function CountingAIPage() {
         right: 0,
         bottom: 0,
       }}>
-        <div style={{ 
-          maxWidth: '1280px', 
+        <div style={{
+          maxWidth: '1280px',
           margin: '0 auto',
           height: '100%',
           width: '100%',
@@ -714,7 +701,6 @@ export default function CountingAIPage() {
             <div style={{
               marginTop: '16px',
               padding: '16px',
-              background: 'rgba(239,68,68,0.1)',
               borderRadius: '12px',
               color: '#f87171',
               position: isMobile ? 'absolute' : 'relative',
@@ -723,7 +709,7 @@ export default function CountingAIPage() {
               right: isMobile ? '16px' : 'auto',
               zIndex: 20,
               backdropFilter: 'blur(8px)',
-              background: 'rgba(239,68,68,0.2)',
+              background: 'rgba(239,68,68,0.2)', // ✅ FIX: doublon "background" supprimé (il y en avait 2 dans cet objet)
               border: '1px solid rgba(239,68,68,0.3)',
               textAlign: 'center',
               fontSize: isMobile ? '14px' : '16px',
@@ -737,9 +723,9 @@ export default function CountingAIPage() {
   }
 
   return (
-    <div style={{ 
-      minHeight: '100vh', 
-      background: '#f1f5f9', 
+    <div style={{
+      minHeight: '100vh',
+      background: '#f1f5f9',
       padding: isMobile ? '16px' : '24px',
       paddingBottom: isMobile ? '80px' : '24px',
     }}>
@@ -751,26 +737,26 @@ export default function CountingAIPage() {
           color: 'white',
           marginBottom: '16px',
         }}>
-          <h1 style={{ 
-            fontSize: isMobile ? '22px' : '28px', 
+          <h1 style={{
+            fontSize: isMobile ? '22px' : '28px',
             fontWeight: 'bold',
             textAlign: isMobile ? 'center' : 'left',
           }}>
             🤖 Comptage Automatique
           </h1>
-          <p style={{ 
-            opacity: 0.8, 
+          <p style={{
+            opacity: 0.8,
             marginTop: '4px',
             fontSize: isMobile ? '14px' : '16px',
             textAlign: isMobile ? 'center' : 'left',
           }}>
             Détection en temps réel avec distinction Hommes/Femmes/Enfants
-            {isModelReady && <span style={{ 
-              marginLeft: '12px', 
-              fontSize: '14px', 
-              background: 'rgba(255,255,255,0.2)', 
-              padding: '2px 12px', 
-              borderRadius: '12px' 
+            {isModelReady && <span style={{
+              marginLeft: '12px',
+              fontSize: '14px',
+              background: 'rgba(255,255,255,0.2)',
+              padding: '2px 12px',
+              borderRadius: '12px'
             }}>✅ Modèle chargé</span>}
           </p>
         </div>
@@ -782,12 +768,12 @@ export default function CountingAIPage() {
           border: '1px solid #e2e8f0',
         }}>
           <div style={{ marginBottom: '14px' }}>
-            <label style={{ 
-              display: 'block', 
-              fontSize: isMobile ? '16px' : '14px', 
-              fontWeight: '600', 
-              color: '#334155', 
-              marginBottom: '6px' 
+            <label style={{
+              display: 'block',
+              fontSize: isMobile ? '16px' : '14px',
+              fontWeight: '600',
+              color: '#334155',
+              marginBottom: '6px'
             }}>
               Assemblée
             </label>
@@ -808,12 +794,12 @@ export default function CountingAIPage() {
           </div>
 
           <div style={{ marginBottom: '14px' }}>
-            <label style={{ 
-              display: 'block', 
-              fontSize: isMobile ? '16px' : '14px', 
-              fontWeight: '600', 
-              color: '#334155', 
-              marginBottom: '6px' 
+            <label style={{
+              display: 'block',
+              fontSize: isMobile ? '16px' : '14px',
+              fontWeight: '600',
+              color: '#334155',
+              marginBottom: '6px'
             }}>
               Culte
             </label>
@@ -839,12 +825,12 @@ export default function CountingAIPage() {
           </div>
 
           <div style={{ marginBottom: '20px' }}>
-            <label style={{ 
-              display: 'block', 
-              fontSize: isMobile ? '16px' : '14px', 
-              fontWeight: '600', 
-              color: '#334155', 
-              marginBottom: '6px' 
+            <label style={{
+              display: 'block',
+              fontSize: isMobile ? '16px' : '14px',
+              fontWeight: '600',
+              color: '#334155',
+              marginBottom: '6px'
             }}>
               Entrée
             </label>
