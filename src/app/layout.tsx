@@ -9,16 +9,13 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'MEGA COUNT - Comptage d\'église',
-  description: 'Application de comptage de fréquentation des cultes',
+  title: 'MEGA COUNT - Système de comptage d\'église',
+  description: 'Application de comptage et gestion de la fréquentation des cultes',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'black-translucent',
+    statusBarStyle: 'default',
     title: 'MEGA COUNT',
-  },
-  formatDetection: {
-    telephone: false,
   },
 };
 
