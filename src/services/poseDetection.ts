@@ -108,6 +108,15 @@ export interface PersonDetectorConfig {
    */
   poseModelAssetPath: string;
 
+  /**
+   * Nombre maximum de squelettes calculés simultanément. Volontairement
+   * séparé de `maxResults` (qui concerne l'ObjectDetector) car calculer
+   * la pose complète est bien plus coûteux que juste détecter "il y a
+   * une personne ici" — une valeur élevée ralentit fortement le temps
+   * réel. À ajuster selon l'affluence typique de tes comptages.
+   */
+  maxPoses: number;
+
   calibration: CalibrationConfig;
 
   /**
@@ -122,6 +131,15 @@ export interface PersonDetectorConfig {
    * ambigu (confiance réduite dans ce cas).
    */
   shoulderHipRatioThreshold: number;
+
+  /**
+   * Score de visibilité minimum (0 à 1, fourni par MediaPipe pour
+   * chaque point de pose) en-dessous duquel un point n'est pas utilisé
+   * pour la classification. Un point avec une visibilité basse est
+   * souvent mal placé (occlusion, flou, basse résolution caméra) et
+   * fausse le ratio épaules/hanches plus qu'il n'aide.
+   */
+  minLandmarkVisibility: number;
 
   tracker: {
     /**
@@ -162,6 +180,11 @@ const DEFAULT_CONFIG: PersonDetectorConfig = {
   poseModelAssetPath:
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
 
+  // Valeur volontairement modeste pour rester fluide en temps réel.
+  // Augmente-la si tu comptes régulièrement de grands groupes qui
+  // arrivent en même temps dans le cadre, en surveillant la fluidité.
+  maxPoses: 8,
+
   calibration: {
     // Valeur par défaut à recalibrer selon l'installation caméra réelle.
     pixelsPerCm: 4.2,
@@ -170,6 +193,8 @@ const DEFAULT_CONFIG: PersonDetectorConfig = {
   childHeightThresholdCm: 140,
 
   shoulderHipRatioThreshold: 1.05,
+
+  minLandmarkVisibility: 0.6,
 
   tracker: {
     iouMatchThreshold: 0.3,
@@ -411,9 +436,10 @@ export class PersonDetector {
         this.config.wasmPath
       );
 
-      this.detector = await ObjectDetector.createFromOptions(
-        filesetResolver,
-        {
+      // Chargement en parallèle des deux modèles (au lieu de l'un
+      // après l'autre) pour réduire le délai de démarrage.
+      const [detector, poseLandmarker] = await Promise.all([
+        ObjectDetector.createFromOptions(filesetResolver, {
           baseOptions: {
             modelAssetPath: this.config.modelAssetPath,
             delegate: this.config.delegate,
@@ -421,20 +447,19 @@ export class PersonDetector {
           runningMode: "VIDEO",
           scoreThreshold: this.config.scoreThreshold,
           maxResults: this.config.maxResults,
-        }
-      );
-
-      this.poseLandmarker = await PoseLandmarker.createFromOptions(
-        filesetResolver,
-        {
+        }),
+        PoseLandmarker.createFromOptions(filesetResolver, {
           baseOptions: {
             modelAssetPath: this.config.poseModelAssetPath,
             delegate: this.config.delegate,
           },
           runningMode: "VIDEO",
-          numPoses: this.config.maxResults,
-        }
-      );
+          numPoses: this.config.maxPoses,
+        }),
+      ]);
+
+      this.detector = detector;
+      this.poseLandmarker = poseLandmarker;
 
       this.isInitialized = true;
       this.lastTimestamp = -1;
@@ -565,8 +590,23 @@ export class PersonDetector {
   }
 
   /**
+   * Vérifie qu'un point de pose est suffisamment fiable pour être
+   * utilisé dans un calcul. `visibility` est `undefined` sur certains
+   * modèles/versions — dans ce cas on considère le point utilisable
+   * par défaut (on ne pénalise pas l'absence du champ lui-même).
+   */
+  private isLandmarkReliable(landmark: NormalizedLandmark | undefined): boolean {
+    if (!landmark) return false;
+    if (landmark.visibility === undefined) return true;
+    return landmark.visibility >= this.config.minLandmarkVisibility;
+  }
+
+  /**
    * Calcule la taille réelle estimée (cm) et le ratio épaules/hanches
-   * à partir des points de pose d'une personne.
+   * à partir des points de pose d'une personne. Les points dont la
+   * visibilité est insuffisante sont écartés plutôt qu'utilisés tels
+   * quels — mieux vaut une métrique absente (repli sur l'heuristique
+   * bounding box) qu'une métrique calculée sur des points mal placés.
    */
   private computeBodyMetrics(
     landmarks: NormalizedLandmark[],
@@ -581,24 +621,55 @@ export class PersonDetector {
     const leftHip = landmarks[LANDMARK.LEFT_HIP];
     const rightHip = landmarks[LANDMARK.RIGHT_HIP];
 
+    const reliableNose = this.isLandmarkReliable(nose) ? nose : undefined;
+    const reliableLeftAnkle = this.isLandmarkReliable(leftAnkle)
+      ? leftAnkle
+      : undefined;
+    const reliableRightAnkle = this.isLandmarkReliable(rightAnkle)
+      ? rightAnkle
+      : undefined;
+    const reliableLeftShoulder = this.isLandmarkReliable(leftShoulder)
+      ? leftShoulder
+      : undefined;
+    const reliableRightShoulder = this.isLandmarkReliable(rightShoulder)
+      ? rightShoulder
+      : undefined;
+    const reliableLeftHip = this.isLandmarkReliable(leftHip)
+      ? leftHip
+      : undefined;
+    const reliableRightHip = this.isLandmarkReliable(rightHip)
+      ? rightHip
+      : undefined;
+
     let estimatedHeightCm: number | null = null;
 
-    if (nose && (leftAnkle || rightAnkle)) {
-      const ankleY = leftAnkle && rightAnkle
-        ? (leftAnkle.y + rightAnkle.y) / 2
-        : (leftAnkle ?? rightAnkle)!.y;
+    if (reliableNose && (reliableLeftAnkle || reliableRightAnkle)) {
+      const ankleY =
+        reliableLeftAnkle && reliableRightAnkle
+          ? (reliableLeftAnkle.y + reliableRightAnkle.y) / 2
+          : (reliableLeftAnkle ?? reliableRightAnkle)!.y;
 
-      const pixelHeight = Math.abs(ankleY - nose.y) * videoHeight;
+      const pixelHeight = Math.abs(ankleY - reliableNose.y) * videoHeight;
       estimatedHeightCm =
         pixelHeight / this.config.calibration.pixelsPerCm;
     }
 
     let shoulderHipRatio: number | null = null;
 
-    if (leftShoulder && rightShoulder && leftHip && rightHip) {
+    // Les 4 points (épaules + hanches) doivent TOUS être fiables pour
+    // calculer le ratio — un seul point mal placé suffit à fausser
+    // significativement le résultat.
+    if (
+      reliableLeftShoulder &&
+      reliableRightShoulder &&
+      reliableLeftHip &&
+      reliableRightHip
+    ) {
       const shoulderWidth =
-        Math.abs(leftShoulder.x - rightShoulder.x) * videoWidth;
-      const hipWidth = Math.abs(leftHip.x - rightHip.x) * videoWidth;
+        Math.abs(reliableLeftShoulder.x - reliableRightShoulder.x) *
+        videoWidth;
+      const hipWidth =
+        Math.abs(reliableLeftHip.x - reliableRightHip.x) * videoWidth;
 
       if (hipWidth > 0) {
         shoulderHipRatio = shoulderWidth / hipWidth;
@@ -649,7 +720,11 @@ export class PersonDetector {
       );
       estimatedHeightCm = metrics.estimatedHeightCm;
 
-      classification = this.classifyFromBodyMetrics(metrics);
+      classification = this.classifyFromBodyMetrics(
+        metrics,
+        size,
+        aspectRatio
+      );
     } else {
       // Repli sur l'ancienne heuristique si aucune pose n'a pu être
       // appariée à cette détection (confiance réduite).
@@ -681,9 +756,16 @@ export class PersonDetector {
 
   /**
    * Classification principale : taille réelle (enfant/adulte) puis,
-   * pour les adultes, ratio épaules/hanches (homme/femme).
+   * pour les adultes, ratio épaules/hanches (homme/femme). Si le
+   * ratio n'a pas pu être calculé (points filtrés pour manque de
+   * fiabilité), on retombe sur l'heuristique bounding box — c'est un
+   * signal moins bon, mais plus fiable qu'un défaut arbitraire.
    */
-  private classifyFromBodyMetrics(metrics: BodyMetrics): {
+  private classifyFromBodyMetrics(
+    metrics: BodyMetrics,
+    bboxSize: number,
+    bboxAspectRatio: number
+  ): {
     gender: GenderCategory;
     confidence: number;
   } {
@@ -708,8 +790,10 @@ export class PersonDetector {
       return { gender: "women", confidence };
     }
 
-    // Ni taille ni ratio exploitables : pose trouvée mais incomplète.
-    return { gender: "men", confidence: 0.4 };
+    // Taille exploitable (donc adulte confirmé) mais ratio épaules/
+    // hanches non disponible : on retombe sur l'heuristique bounding
+    // box plutôt que de deviner "homme" par défaut.
+    return this.classifyFromBoundingBox(bboxSize, bboxAspectRatio);
   }
 
   /**
