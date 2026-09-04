@@ -1,58 +1,80 @@
 import {
   FilesetResolver,
   ObjectDetector,
-  Detection,
+  type Detection,
 } from "@mediapipe/tasks-vision";
 
 /**
- * Catégories d'estimation.
+ * Catégories utilisées par le frontend actuel.
  *
- * Important :
- * "men" / "women" ne doivent pas être considérés comme
- * le genre réel d'une personne. Ce sont des classifications
- * visuelles estimées par un modèle.
+ * IMPORTANT :
+ * Ces catégories représentent une estimation visuelle.
+ * Elles ne déterminent pas le genre réel d'une personne.
  */
-export type AppearanceCategory =
-  | "men"
-  | "women"
-  | "children"
-  | "unknown";
-
-export interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+export type GenderCategory = "men" | "women" | "children";
 
 export interface PersonDetection {
-  id: string;
+  /**
+   * Format conservé pour la compatibilité avec counting-ai/page.tsx
+   *
+   * [x, y, width, height]
+   */
+  bbox: [number, number, number, number];
 
-  bbox: BoundingBox;
+  /**
+   * Score de détection de la personne par MediaPipe.
+   */
+  score: number;
 
-  detectionScore: number;
+  /**
+   * Classe détectée.
+   */
+  class: "person";
 
-  category: "person";
+  /**
+   * Classification actuelle utilisée par le frontend.
+   */
+  gender: GenderCategory;
 
-  appearance: {
-    category: AppearanceCategory;
-    confidence: number;
-  };
+  /**
+   * Confiance de l'estimation.
+   */
+  confidence: number;
 
-  timestamp: number;
+  /**
+   * Surface de la bounding box.
+   */
+  size: number;
+
+  /**
+   * Ratio hauteur / largeur.
+   */
+  aspectRatio: number;
+
+  /**
+   * Raccourcis conservés pour le frontend existant.
+   */
+  isChild: boolean;
+  isWoman: boolean;
+  isMan: boolean;
 }
 
-export interface DetectorConfig {
+export interface PersonDetectorConfig {
   scoreThreshold: number;
   maxResults: number;
   delegate: "GPU" | "CPU";
-  modelAssetPath: string;
   wasmPath: string;
+  modelAssetPath: string;
 }
 
-const DEFAULT_CONFIG: DetectorConfig = {
+/**
+ * Configuration par défaut.
+ */
+const DEFAULT_CONFIG: PersonDetectorConfig = {
   scoreThreshold: 0.5,
+
   maxResults: 20,
+
   delegate: "GPU",
 
   wasmPath:
@@ -65,26 +87,30 @@ const DEFAULT_CONFIG: DetectorConfig = {
 /**
  * Détecteur de personnes.
  *
- * Responsabilités :
- * 1. Initialiser MediaPipe
- * 2. Détecter les personnes
- * 3. Normaliser les bounding boxes
- * 4. Fournir une structure exploitable par un tracker
- * 5. Préparer l'intégration d'un modèle de classification
+ * Cette classe est volontairement responsable uniquement de :
  *
- * La classification d'apparence est volontairement séparée
- * de la détection.
+ * - l'initialisation de MediaPipe
+ * - la détection des personnes
+ * - la normalisation des données
+ * - l'estimation actuelle utilisée par le frontend
+ *
+ * Le système pourra ensuite être amélioré avec :
+ *
+ * - un vrai tracker
+ * - un modèle spécialisé de classification
+ * - un système anti-double-comptage
+ * - une analyse temporelle sur plusieurs frames
  */
 export class PersonDetector {
   private detector: ObjectDetector | null = null;
 
-  private initialized = false;
-
-  private config: DetectorConfig;
+  private isInitialized = false;
 
   private lastTimestamp = -1;
 
-  constructor(config: Partial<DetectorConfig> = {}) {
+  private config: PersonDetectorConfig;
+
+  constructor(config: Partial<PersonDetectorConfig> = {}) {
     this.config = {
       ...DEFAULT_CONFIG,
       ...config,
@@ -95,88 +121,100 @@ export class PersonDetector {
    * Initialise MediaPipe.
    */
   async initialize(): Promise<boolean> {
-    if (this.initialized && this.detector) {
+    if (this.isInitialized && this.detector) {
       return true;
     }
 
     try {
-      console.log("🔄 Initialisation du détecteur...");
+      console.log("🔄 Initialisation du détecteur MediaPipe...");
 
-      const vision = await FilesetResolver.forVisionTasks(
+      const filesetResolver = await FilesetResolver.forVisionTasks(
         this.config.wasmPath
       );
 
-      this.detector = await ObjectDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: this.config.modelAssetPath,
-          delegate: this.config.delegate,
-        },
+      this.detector = await ObjectDetector.createFromOptions(
+        filesetResolver,
+        {
+          baseOptions: {
+            modelAssetPath: this.config.modelAssetPath,
+            delegate: this.config.delegate,
+          },
 
-        runningMode: "VIDEO",
+          runningMode: "VIDEO",
 
-        scoreThreshold: this.config.scoreThreshold,
+          scoreThreshold: this.config.scoreThreshold,
 
-        maxResults: this.config.maxResults,
-      });
+          maxResults: this.config.maxResults,
+        }
+      );
 
-      this.initialized = true;
+      this.isInitialized = true;
+
+      this.lastTimestamp = -1;
 
       console.log("✅ Détecteur MediaPipe initialisé");
 
       return true;
     } catch (error) {
-      this.initialized = false;
-      this.detector = null;
-
       console.error(
-        "❌ Impossible d'initialiser le détecteur :",
+        "❌ Erreur d'initialisation MediaPipe :",
         error
       );
+
+      this.detector = null;
+      this.isInitialized = false;
 
       return false;
     }
   }
 
   /**
-   * Détecte les personnes présentes dans une frame vidéo.
+   * Détecte les personnes dans une frame vidéo.
+   *
+   * La structure retournée reste volontairement compatible
+   * avec l'ancien counting-ai/page.tsx.
    */
-  detectPersons(
-    video: HTMLVideoElement,
-    timestamp: number = performance.now()
-  ): PersonDetection[] {
-    if (!this.detector || !this.initialized) {
-      console.warn("⚠️ Le détecteur n'est pas initialisé");
+  async detectPersons(
+    video: HTMLVideoElement
+  ): Promise<PersonDetection[]> {
+    if (!this.isInitialized || !this.detector) {
+      console.warn(
+        "⚠️ Le détecteur MediaPipe n'est pas initialisé"
+      );
+
       return [];
     }
 
-    /**
-     * MediaPipe VIDEO nécessite des timestamps
-     * monotoniquement croissants.
-     */
-    if (timestamp <= this.lastTimestamp) {
-      timestamp = this.lastTimestamp + 1;
-    }
-
-    this.lastTimestamp = timestamp;
-
     try {
+      let timestamp = performance.now();
+
+      /**
+       * MediaPipe VIDEO attend des timestamps croissants.
+       *
+       * Cela évite les problèmes lorsque deux appels arrivent
+       * avec le même timestamp.
+       */
+      if (timestamp <= this.lastTimestamp) {
+        timestamp = this.lastTimestamp + 1;
+      }
+
+      this.lastTimestamp = timestamp;
+
       const result = this.detector.detectForVideo(
         video,
         timestamp
       );
 
-      if (!result.detections?.length) {
+      if (!result?.detections?.length) {
         return [];
       }
 
       return result.detections
-        .filter((detection) => this.isPerson(detection))
-        .map((detection, index) =>
-          this.normalizeDetection(
-            detection,
-            timestamp,
-            index
-          )
+        .filter((detection) =>
+          this.isPersonDetection(detection)
+        )
+        .map((detection) =>
+          this.convertDetection(detection)
         );
     } catch (error) {
       console.error(
@@ -189,29 +227,34 @@ export class PersonDetector {
   }
 
   /**
-   * Vérifie qu'une détection correspond à une personne.
+   * Vérifie qu'une détection correspond bien à une personne.
    */
-  private isPerson(detection: Detection): boolean {
+  private isPersonDetection(
+    detection: Detection
+  ): boolean {
     const category = detection.categories?.[0];
 
     if (!category) {
       return false;
     }
 
+    const categoryName =
+      category.categoryName?.toLowerCase();
+
+    const score = category.score ?? 0;
+
     return (
-      category.categoryName?.toLowerCase() === "person" &&
-      category.score >= this.config.scoreThreshold
+      categoryName === "person" &&
+      score >= this.config.scoreThreshold
     );
   }
 
   /**
-   * Transforme la réponse MediaPipe en structure
-   * indépendante du moteur de détection.
+   * Transforme une détection MediaPipe en objet compatible
+   * avec le frontend actuel.
    */
-  private normalizeDetection(
-    detection: Detection,
-    timestamp: number,
-    index: number
+  private convertDetection(
+    detection: Detection
   ): PersonDetection {
     const bbox = detection.boundingBox;
 
@@ -223,74 +266,256 @@ export class PersonDetector {
     const score =
       detection.categories?.[0]?.score ?? 0;
 
+    const size = width * height;
+
+    const aspectRatio =
+      width > 0 ? height / width : 0;
+
+    /**
+     * Classification actuelle.
+     *
+     * IMPORTANT :
+     * cette partie reste une HEURISTIQUE afin de conserver
+     * le fonctionnement actuel de ton application.
+     *
+     * Ce n'est pas un modèle IA de reconnaissance du genre.
+     *
+     * Elle pourra être remplacée plus tard par un véritable
+     * modèle de classification sans modifier le contrat
+     * utilisé par counting-ai/page.tsx.
+     */
+    const classification =
+      this.estimateCategory(
+        size,
+        aspectRatio
+      );
+
     return {
       /**
-       * ID temporaire.
-       *
-       * Ce n'est PAS encore un vrai tracking ID.
-       * Le tracker pourra ensuite remplacer cette valeur.
+       * Format historique conservé.
        */
-      id: `detection-${timestamp}-${index}`,
+      bbox: [x, y, width, height],
 
-      bbox: {
-        x,
-        y,
-        width,
-        height,
-      },
+      score,
 
-      detectionScore: score,
+      class: "person",
 
-      category: "person",
+      gender: classification.gender,
 
-      /**
-       * La classification est volontairement "unknown".
-       *
-       * Un modèle spécialisé pourra ensuite remplir
-       * cette propriété.
-       */
-      appearance: {
-        category: "unknown",
-        confidence: 0,
-      },
+      confidence: classification.confidence,
 
-      timestamp,
+      size,
+
+      aspectRatio,
+
+      isChild:
+        classification.gender === "children",
+
+      isWoman:
+        classification.gender === "women",
+
+      isMan:
+        classification.gender === "men",
     };
   }
 
   /**
-   * Vérifie si le moteur est prêt.
+   * Estimation actuelle de catégorie.
+   *
+   * Cette méthode est isolée afin de pouvoir être remplacée
+   * ultérieurement par un vrai modèle de classification.
    */
-  isReady(): boolean {
-    return this.initialized && this.detector !== null;
+  private estimateCategory(
+    size: number,
+    aspectRatio: number
+  ): {
+    gender: GenderCategory;
+    confidence: number;
+  } {
+    /**
+     * Seuils conservés de l'ancien système pour ne pas
+     * changer brutalement le comportement de l'application.
+     */
+    const CHILD_THRESHOLD = 15000;
+
+    const ADULT_MIN_SIZE = 20000;
+
+    const WOMAN_ASPECT_RATIO = 1.35;
+
+    /**
+     * Très petite détection.
+     */
+    if (size < 8000) {
+      return {
+        gender: "children",
+        confidence: 0.8,
+      };
+    }
+
+    /**
+     * Probablement un enfant.
+     */
+    if (size < CHILD_THRESHOLD) {
+      return {
+        gender: "children",
+        confidence: 0.7,
+      };
+    }
+
+    /**
+     * Personne très proche de la caméra.
+     *
+     * On conserve le comportement historique pour
+     * éviter de casser le frontend existant.
+     */
+    if (size > 60000) {
+      return {
+        gender: "men",
+        confidence: 0.8,
+      };
+    }
+
+    /**
+     * Adulte avec grande bounding box.
+     */
+    if (size > ADULT_MIN_SIZE) {
+      if (aspectRatio > WOMAN_ASPECT_RATIO) {
+        return {
+          gender: "women",
+          confidence: 0.65,
+        };
+      }
+
+      return {
+        gender: "men",
+        confidence: 0.65,
+      };
+    }
+
+    /**
+     * Zone intermédiaire.
+     */
+    if (aspectRatio > WOMAN_ASPECT_RATIO) {
+      return {
+        gender: "women",
+        confidence: 0.55,
+      };
+    }
+
+    return {
+      gender: "men",
+      confidence: 0.55,
+    };
   }
 
   /**
-   * Retourne la configuration actuelle.
+   * Version simplifiée.
+   *
+   * Conservée pour ne pas casser les éventuels appels
+   * existants dans l'application.
    */
-  getConfig(): DetectorConfig {
+  async detectPersonsSimple(
+    video: HTMLVideoElement
+  ): Promise<
+    Array<{
+      bbox: [number, number, number, number];
+      score: number;
+      class: "person";
+    }>
+  > {
+    if (!this.isInitialized || !this.detector) {
+      console.warn(
+        "⚠️ Le détecteur MediaPipe n'est pas initialisé"
+      );
+
+      return [];
+    }
+
+    try {
+      let timestamp = performance.now();
+
+      if (timestamp <= this.lastTimestamp) {
+        timestamp = this.lastTimestamp + 1;
+      }
+
+      this.lastTimestamp = timestamp;
+
+      const result = this.detector.detectForVideo(
+        video,
+        timestamp
+      );
+
+      if (!result?.detections?.length) {
+        return [];
+      }
+
+      return result.detections
+        .filter((detection) =>
+          this.isPersonDetection(detection)
+        )
+        .map((detection) => {
+          const bbox = detection.boundingBox;
+
+          return {
+            bbox: [
+              bbox?.originX ?? 0,
+              bbox?.originY ?? 0,
+              bbox?.width ?? 0,
+              bbox?.height ?? 0,
+            ],
+            score:
+              detection.categories?.[0]?.score ?? 0,
+            class: "person" as const,
+          };
+        });
+    } catch (error) {
+      console.error(
+        "❌ Erreur de détection simple :",
+        error
+      );
+
+      return [];
+    }
+  }
+
+  /**
+   * Indique si le détecteur est prêt.
+   */
+  isReady(): boolean {
+    return (
+      this.isInitialized &&
+      this.detector !== null
+    );
+  }
+
+  /**
+   * Retourne la configuration.
+   */
+  getConfig(): PersonDetectorConfig {
     return {
       ...this.config,
     };
   }
 
   /**
-   * Libère les ressources MediaPipe.
+   * Arrête proprement le détecteur.
    */
   close(): void {
     if (this.detector) {
       this.detector.close();
-      this.detector = null;
     }
 
-    this.initialized = false;
+    this.detector = null;
+
+    this.isInitialized = false;
+
     this.lastTimestamp = -1;
 
-    console.log("🛑 Détecteur arrêté");
+    console.log("🛑 Détecteur MediaPipe arrêté");
   }
 }
 
 /**
- * Instance globale utilisable dans l'application.
+ * Instance globale utilisée par l'application.
  */
 export const personDetector = new PersonDetector();
