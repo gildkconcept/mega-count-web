@@ -100,13 +100,13 @@ export default function CountingAIPage() {
     try {
       const token = localStorage.getItem('token');
       const [assembliesRes, servicesRes, entrancesRes] = await Promise.all([
-        fetch('http://localhost:3001/api/assemblies', {
+        fetch(' https://floors-amino-steel-nine.trycloudflare.com/api/assemblies', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(r => r.json()),
-        fetch('http://localhost:3001/api/services', {
+        fetch('https://floors-amino-steel-nine.trycloudflare.com/api/services', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(r => r.json()),
-        fetch('http://localhost:3001/api/entrances', {
+        fetch('https://floors-amino-steel-nine.trycloudflare.com/api/entrances', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(r => r.json())
       ]);
@@ -123,7 +123,7 @@ export default function CountingAIPage() {
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(
-        `http://localhost:3001/api/sessions?entrance_id=${selectedEntrance}`,
+        `https://floors-amino-steel-nine.trycloudflare.com/api/sessions?entrance_id=${selectedEntrance}`,
         { headers: { 'Authorization': `Bearer ${token}` } }
       );
       const data = await response.json();
@@ -135,7 +135,7 @@ export default function CountingAIPage() {
 
       for (const session of activeSessions) {
         await fetch(
-          `http://localhost:3001/api/sessions/${session.id}/end`,
+          `https://floors-amino-steel-nine.trycloudflare.com/api/sessions/${session.id}/end`,
           {
             method: 'PUT',
             headers: {
@@ -436,7 +436,7 @@ export default function CountingAIPage() {
 
       await checkAndEndActiveSession();
 
-      const response = await fetch('http://localhost:3001/api/sessions/start', {
+      const response = await fetch('https://floors-amino-steel-nine.trycloudflare.com/api/sessions/start', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -500,7 +500,7 @@ export default function CountingAIPage() {
       const token = localStorage.getItem('token');
       const finalCount = countRef.current;
 
-      const response = await fetch(`http://localhost:3001/api/sessions/${sessionId}/end`, {
+      const response = await fetch(`https://floors-amino-steel-nine.trycloudflare.com/api/sessions/${sessionId}/end`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

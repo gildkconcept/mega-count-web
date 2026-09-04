@@ -31,13 +31,13 @@ export default function CountingPage() {
   const loadData = async () => {
     try {
       const [assembliesRes, servicesRes, entrancesRes] = await Promise.all([
-        fetch('http://localhost:3001/api/assemblies', {
+        fetch(' https://floors-amino-steel-nine.trycloudflare.com/api/assemblies', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(r => r.json()),
-        fetch('http://localhost:3001/api/services', {
+        fetch('https://floors-amino-steel-nine.trycloudflare.com/api/services', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(r => r.json()),
-        fetch('http://localhost:3001/api/entrances', {
+        fetch('https://floors-amino-steel-nine.trycloudflare.com/api/entrances', {
           headers: { 'Authorization': `Bearer ${token}` }
         }).then(r => r.json())
       ]);
@@ -84,7 +84,7 @@ export default function CountingPage() {
     setError('');
 
     try {
-      const response = await fetch('http://localhost:3001/api/sessions/start', {
+      const response = await fetch('https://floors-amino-steel-nine.trycloudflare.com/api/sessions/start', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -144,7 +144,7 @@ export default function CountingPage() {
 
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3001/api/sessions/${sessionId}/end`, {
+      const response = await fetch(`https://floors-amino-steel-nine.trycloudflare.com/api/sessions/${sessionId}/end`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

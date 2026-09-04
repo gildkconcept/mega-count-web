@@ -23,7 +23,7 @@ export default function SessionDetailPage() {
 
   const loadSession = async () => {
     try {
-      const response = await fetch(`http://localhost:3001/api/sessions/${sessionId}`, {
+      const response = await fetch(`https://floors-amino-steel-nine.trycloudflare.com/api/sessions/${sessionId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await response.json();
