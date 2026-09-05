@@ -2,6 +2,7 @@ import {
   FilesetResolver,
   ObjectDetector,
   PoseLandmarker,
+  FaceDetector,
   type Detection,
   type PoseLandmarkerResult,
   type NormalizedLandmark,
@@ -141,6 +142,53 @@ export interface PersonDetectorConfig {
    */
   minLandmarkVisibility: number;
 
+  /**
+   * Modèle MediaPipe de détection de visage (localisation uniquement,
+   * pas de reconnaissance d'identité).
+   */
+  faceModelAssetPath: string;
+
+  /**
+   * Analyse de texture (filtre de convolution Sobel) sur la zone
+   * menton/mâchoire, utilisée comme signal d'appoint pour détecter
+   * une pilosité faciale (barbe/moustache) quand le ratio épaules/
+   * hanches est ambigu. Un score de "rugosité" élevé (beaucoup de
+   * contours détectés) suggère une barbe ; un score bas ne prouve
+   * rien (beaucoup d'hommes n'en ont pas) — c'est un indice
+   * asymétrique, pas une preuve dans les deux sens.
+   */
+  beardDetection: {
+    enabled: boolean;
+
+    /**
+     * Écart au seuil `shoulderHipRatioThreshold` en-dessous duquel on
+     * considère le ratio "ambigu" et on déclenche l'analyse de texture
+     * en complément (pour ne pas la lancer inutilement quand le ratio
+     * seul donne déjà une réponse confiante).
+     */
+    ambiguityZone: number;
+
+    /**
+     * Proportion de la hauteur du visage utilisée comme zone menton
+     * (bas du visage), où l'on cherche la texture de barbe.
+     */
+    chinRegionHeightRatio: number;
+
+    /**
+     * Score moyen de gradient (intensité des contours détectés par
+     * Sobel) au-dessus duquel on considère qu'une barbe est probable.
+     * À calibrer selon ta caméra — plus la résolution est basse, plus
+     * il faudra sans doute baisser ce seuil.
+     */
+    edgeDensityThreshold: number;
+
+    /**
+     * Confiance appliquée quand une barbe est détectée dans la zone
+     * ambiguë (fait pencher la classification vers "homme").
+     */
+    confidenceWhenDetected: number;
+  };
+
   tracker: {
     /**
      * IoU minimum pour considérer qu'une détection correspond à une
@@ -195,6 +243,19 @@ const DEFAULT_CONFIG: PersonDetectorConfig = {
   shoulderHipRatioThreshold: 1.05,
 
   minLandmarkVisibility: 0.6,
+
+  faceModelAssetPath:
+    "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+
+  beardDetection: {
+    enabled: true,
+    ambiguityZone: 0.08,
+    chinRegionHeightRatio: 0.35,
+    // Valeur de départ à ajuster en observant les scores réels via
+    // estimatedHeightCm/debug — dépend beaucoup de la caméra.
+    edgeDensityThreshold: 25,
+    confidenceWhenDetected: 0.65,
+  },
 
   tracker: {
     iouMatchThreshold: 0.3,
@@ -391,6 +452,7 @@ class PersonTracker {
 export class PersonDetector {
   private detector: ObjectDetector | null = null;
   private poseLandmarker: PoseLandmarker | null = null;
+  private faceDetector: FaceDetector | null = null;
 
   private isInitialized = false;
 
@@ -399,6 +461,13 @@ export class PersonDetector {
   private config: PersonDetectorConfig;
 
   private tracker: PersonTracker;
+
+  /**
+   * Canvas hors-écran réutilisé pour l'analyse de texture (barbe),
+   * créé une seule fois et redimensionné au besoin plutôt que recréé
+   * à chaque détection.
+   */
+  private analysisCanvas: HTMLCanvasElement | null = null;
 
   constructor(config: Partial<PersonDetectorConfig> = {}) {
     this.config = {
@@ -436,9 +505,9 @@ export class PersonDetector {
         this.config.wasmPath
       );
 
-      // Chargement en parallèle des deux modèles (au lieu de l'un
+      // Chargement en parallèle des trois modèles (au lieu de l'un
       // après l'autre) pour réduire le délai de démarrage.
-      const [detector, poseLandmarker] = await Promise.all([
+      const [detector, poseLandmarker, faceDetector] = await Promise.all([
         ObjectDetector.createFromOptions(filesetResolver, {
           baseOptions: {
             modelAssetPath: this.config.modelAssetPath,
@@ -456,16 +525,24 @@ export class PersonDetector {
           runningMode: "VIDEO",
           numPoses: this.config.maxPoses,
         }),
+        FaceDetector.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: this.config.faceModelAssetPath,
+            delegate: this.config.delegate,
+          },
+          runningMode: "VIDEO",
+        }),
       ]);
 
       this.detector = detector;
       this.poseLandmarker = poseLandmarker;
+      this.faceDetector = faceDetector;
 
       this.isInitialized = true;
       this.lastTimestamp = -1;
       this.tracker.reset();
 
-      console.log("✅ Détecteurs MediaPipe initialisés (objets + pose)");
+      console.log("✅ Détecteurs MediaPipe initialisés (objets + pose + visage)");
 
       return true;
     } catch (error) {
@@ -473,6 +550,7 @@ export class PersonDetector {
 
       this.detector = null;
       this.poseLandmarker = null;
+      this.faceDetector = null;
       this.isInitialized = false;
 
       return false;
@@ -505,6 +583,9 @@ export class PersonDetector {
 
       const objectResult = this.detector.detectForVideo(video, timestamp);
       const poseResult = this.poseLandmarker.detectForVideo(video, timestamp);
+      const faceResult = this.faceDetector
+        ? this.faceDetector.detectForVideo(video, timestamp)
+        : null;
 
       if (!objectResult?.detections?.length) {
         this.tracker.pruneStaleTracks(new Set());
@@ -521,6 +602,7 @@ export class PersonDetector {
         const { converted, trackId } = this.convertDetection(
           detection,
           poseResult,
+          faceResult,
           video
         );
         matchedTrackIds.add(trackId);
@@ -599,6 +681,148 @@ export class PersonDetector {
     if (!landmark) return false;
     if (landmark.visibility === undefined) return true;
     return landmark.visibility >= this.config.minLandmarkVisibility;
+  }
+
+  /**
+   * Trouve, parmi tous les visages détectés dans la frame, celui dont
+   * le centre tombe à l'intérieur de la bounding box donnée.
+   */
+  private matchFaceToBbox(
+    bbox: Rect,
+    faceResult: { detections: Detection[] } | null
+  ): Rect | null {
+    if (!faceResult?.detections?.length) return null;
+
+    for (const face of faceResult.detections) {
+      const fb = face.boundingBox;
+      if (!fb) continue;
+
+      const centerX = fb.originX + fb.width / 2;
+      const centerY = fb.originY + fb.height / 2;
+
+      const inside =
+        centerX >= bbox.x &&
+        centerX <= bbox.x + bbox.width &&
+        centerY >= bbox.y &&
+        centerY <= bbox.y + bbox.height;
+
+      if (inside) {
+        return { x: fb.originX, y: fb.originY, width: fb.width, height: fb.height };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Analyse la zone menton/mâchoire d'un visage via un filtre de
+   * convolution Sobel, et retourne un score moyen d'intensité de
+   * contours ("rugosité" de texture). Un score élevé suggère une
+   * pilosité faciale ; un score bas ne prouve rien dans l'autre sens.
+   *
+   * Retourne `null` si la zone est trop petite pour être analysée
+   * utilement (visage trop loin/flou).
+   */
+  private analyzeBeardTexture(
+    video: HTMLVideoElement,
+    faceBbox: Rect
+  ): number | null {
+    const chinHeight = Math.round(
+      faceBbox.height * this.config.beardDetection.chinRegionHeightRatio
+    );
+    const chinY = Math.round(faceBbox.y + faceBbox.height - chinHeight);
+    const chinX = Math.round(faceBbox.x + faceBbox.width * 0.2);
+    const chinWidth = Math.round(faceBbox.width * 0.6);
+
+    // Zone trop petite pour être exploitable (visage trop loin/flou).
+    if (chinWidth < 8 || chinHeight < 8) return null;
+
+    if (!this.analysisCanvas) {
+      this.analysisCanvas = document.createElement("canvas");
+    }
+    const canvas = this.analysisCanvas;
+    canvas.width = chinWidth;
+    canvas.height = chinHeight;
+
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+
+    try {
+      ctx.drawImage(
+        video,
+        chinX,
+        chinY,
+        chinWidth,
+        chinHeight,
+        0,
+        0,
+        chinWidth,
+        chinHeight
+      );
+    } catch {
+      // La zone peut déborder du cadre vidéo (visage sur le bord) —
+      // dans ce cas on abandonne simplement l'analyse pour cette frame.
+      return null;
+    }
+
+    const imageData = ctx.getImageData(0, 0, chinWidth, chinHeight);
+    return this.computeSobelEdgeIntensity(
+      imageData.data,
+      chinWidth,
+      chinHeight
+    );
+  }
+
+  /**
+   * Filtre de convolution Sobel (détection de contours), appliqué à
+   * une image en niveaux de gris, retournant l'intensité moyenne des
+   * contours détectés sur toute la zone.
+   *
+   * Une peau lisse produit peu de variations brusques de luminosité
+   * (score bas). Une zone barbue produit beaucoup de petits contours
+   * rapprochés (score élevé).
+   */
+  private computeSobelEdgeIntensity(
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number
+  ): number {
+    // Conversion en niveaux de gris.
+    const gray = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const r = rgba[i * 4];
+      const g = rgba[i * 4 + 1];
+      const b = rgba[i * 4 + 2];
+      gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+    }
+
+    const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+    const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+
+    let totalMagnitude = 0;
+    let sampleCount = 0;
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let gx = 0;
+        let gy = 0;
+        let k = 0;
+
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const pixel = gray[(y + ky) * width + (x + kx)];
+            gx += pixel * sobelX[k];
+            gy += pixel * sobelY[k];
+            k++;
+          }
+        }
+
+        totalMagnitude += Math.sqrt(gx * gx + gy * gy);
+        sampleCount++;
+      }
+    }
+
+    return sampleCount > 0 ? totalMagnitude / sampleCount : 0;
   }
 
   /**
@@ -687,6 +911,7 @@ export class PersonDetector {
   private convertDetection(
     detection: Detection,
     poseResult: PoseLandmarkerResult,
+    faceResult: { detections: Detection[] } | null,
     video: HTMLVideoElement
   ): { converted: PersonDetection; trackId: number } {
     const bboxRaw = detection.boundingBox;
@@ -720,10 +945,29 @@ export class PersonDetector {
       );
       estimatedHeightCm = metrics.estimatedHeightCm;
 
+      // Le tie-breaker barbe n'a de sens que si le ratio épaules/
+      // hanches est dans la zone ambiguë — sinon on ne lance pas
+      // l'analyse (économie de calcul, et on ne contredit pas un
+      // signal déjà confiant).
+      let beardScore: number | null = null;
+      if (
+        this.config.beardDetection.enabled &&
+        metrics.shoulderHipRatio !== null &&
+        Math.abs(
+          metrics.shoulderHipRatio - this.config.shoulderHipRatioThreshold
+        ) <= this.config.beardDetection.ambiguityZone
+      ) {
+        const matchedFace = this.matchFaceToBbox(bboxRect, faceResult);
+        if (matchedFace) {
+          beardScore = this.analyzeBeardTexture(video, matchedFace);
+        }
+      }
+
       classification = this.classifyFromBodyMetrics(
         metrics,
         size,
-        aspectRatio
+        aspectRatio,
+        beardScore
       );
     } else {
       // Repli sur l'ancienne heuristique si aucune pose n'a pu être
@@ -764,7 +1008,8 @@ export class PersonDetector {
   private classifyFromBodyMetrics(
     metrics: BodyMetrics,
     bboxSize: number,
-    bboxAspectRatio: number
+    bboxAspectRatio: number,
+    beardScore: number | null = null
   ): {
     gender: GenderCategory;
     confidence: number;
@@ -778,6 +1023,20 @@ export class PersonDetector {
     if (metrics.shoulderHipRatio !== null) {
       const ratio = metrics.shoulderHipRatio;
       const threshold = this.config.shoulderHipRatioThreshold;
+
+      // Tie-breaker : si le ratio est ambigu et qu'une texture de
+      // barbe a été détectée, on tranche vers "homme" avec une
+      // confiance dédiée — un score de barbe élevé est un signal fort
+      // dans un cas par ailleurs incertain.
+      if (
+        beardScore !== null &&
+        beardScore >= this.config.beardDetection.edgeDensityThreshold
+      ) {
+        return {
+          gender: "men",
+          confidence: this.config.beardDetection.confidenceWhenDetected,
+        };
+      }
 
       // Plus on s'éloigne du seuil, plus la confiance augmente
       // (proche de 1 = ambigu, on réduit la confiance).
@@ -919,9 +1178,13 @@ export class PersonDetector {
     if (this.poseLandmarker) {
       this.poseLandmarker.close();
     }
+    if (this.faceDetector) {
+      this.faceDetector.close();
+    }
 
     this.detector = null;
     this.poseLandmarker = null;
+    this.faceDetector = null;
     this.isInitialized = false;
     this.lastTimestamp = -1;
     this.tracker.reset();
